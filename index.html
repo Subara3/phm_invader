@@ -50,7 +50,7 @@ function makeGain(vol, dur) {
 const seCd = {};
 function playSE(type) {
   if (!audioCtx || audioCtx.state !== 'running') return;
-  const cd = { shoot: 3, hit: 2, beetle: 10, astrophage: 15, damage: 8, wave: 20 };
+  const cd = { shoot: 3, hit: 2, beetle: 10, astrophage: 15, damage: 8, wave: 20, repair: 30, rescue: 20, infested: 30 };
   if (cd[type] && seCd[type] && frame - seCd[type] < cd[type]) return;
   seCd[type] = frame;
   const t = audioCtx.currentTime;
@@ -99,6 +99,27 @@ function playSE(type) {
       const o = audioCtx.createOscillator(); o.type = 'sine'; o.frequency.value = f;
       o.connect(sg); o.start(t + i * 0.15); o.stop(t + i * 0.15 + 0.5);
     });
+  } else if (type === 'repair') {
+    [440, 550, 660, 880].forEach((f, i) => {
+      const sg = audioCtx.createGain(); sg.connect(audioCtx.destination);
+      sg.gain.setValueAtTime(0, t + i * 0.08); sg.gain.linearRampToValueAtTime(0.06, t + i * 0.08 + 0.02);
+      sg.gain.exponentialRampToValueAtTime(0.001, t + i * 0.08 + 0.2);
+      const o = audioCtx.createOscillator(); o.type = 'triangle'; o.frequency.value = f;
+      o.connect(sg); o.start(t + i * 0.08); o.stop(t + i * 0.08 + 0.2);
+    });
+  } else if (type === 'rescue') {
+    [800, 1000, 1200].forEach((f, i) => {
+      const sg = audioCtx.createGain(); sg.connect(audioCtx.destination);
+      sg.gain.setValueAtTime(0, t + i * 0.06); sg.gain.linearRampToValueAtTime(0.08, t + i * 0.06 + 0.02);
+      sg.gain.exponentialRampToValueAtTime(0.001, t + i * 0.06 + 0.15);
+      const o = audioCtx.createOscillator(); o.type = 'sine'; o.frequency.value = f;
+      o.connect(sg); o.start(t + i * 0.06); o.stop(t + i * 0.06 + 0.15);
+    });
+  } else if (type === 'infested') {
+    const { g } = makeGain(0.1, 0.4);
+    const o = audioCtx.createOscillator(); o.type = 'sawtooth';
+    o.frequency.setValueAtTime(300, t); o.frequency.exponentialRampToValueAtTime(100, t + 0.4);
+    o.connect(g); o.start(t); o.stop(t + 0.4);
   } else if (type === 'gameover') {
     [400, 350, 300, 200].forEach((f, i) => {
       const sg = audioCtx.createGain(); sg.connect(audioCtx.destination);
@@ -124,7 +145,13 @@ const isTouch = 'ontouchstart' in window;
 // Player (Grace)
 const player = { x: W / 2, y: H - 45, w: 20, h: 24, speed: 3, cooldown: 0 };
 // Rocky (NPC ally)
-const rocky = { x: W / 2 + 60, y: H - 45, vx: 0.8, ready: false, readyTimer: 0, readyInterval: 300 };
+const rocky = {
+  x: W / 2 + 60, y: H - 45, vx: 0.8,
+  ready: false, readyTimer: 0, readyInterval: 300,
+  state: 'idle', // 'idle' | 'repairing' | 'infested'
+  repairTarget: null, repairProgress: 0,
+  infestedTimer: 0, infestedTau: 0
+};
 // O2 tanks
 let o2tanks = [];
 // Taumoeba
@@ -186,6 +213,8 @@ function startGame() {
   frame = 0; wave = 0; killCount = 0; astrophage = 3;
   player.x = W / 2; player.cooldown = 0;
   rocky.x = W / 2 + 60; rocky.ready = false; rocky.readyTimer = 0;
+  rocky.state = 'idle'; rocky.repairTarget = null; rocky.repairProgress = 0;
+  rocky.infestedTimer = 0; rocky.infestedTau = 0;
   bullets = []; beetles = []; particles = [];
   beetlesAvail = MAX_BEETLES;
   for (const k in seCd) delete seCd[k];
@@ -234,19 +263,23 @@ function drawRocky(x, y, ready) {
   ctx.save(); ctx.translate(Math.round(x), Math.round(y));
   const sc = 1.2;
   ctx.scale(sc, sc);
+  const infested = rocky.state === 'infested';
+  const repairing = rocky.state === 'repairing';
   // Body (brown Eridian - rocky shape)
-  ctx.fillStyle = ready ? '#fa4' : '#a67040';
+  const bodyColor = infested ? '#556030' : repairing ? '#c08040' : ready ? '#fa4' : '#a67040';
+  ctx.fillStyle = bodyColor;
   ctx.beginPath(); ctx.ellipse(0, -4, 8, 10, 0, 0, Math.PI * 2); ctx.fill();
   // Rocky texture
-  ctx.fillStyle = ready ? '#fc6' : '#8a5a30';
+  const innerColor = infested ? '#405020' : repairing ? '#a06830' : ready ? '#fc6' : '#8a5a30';
+  ctx.fillStyle = innerColor;
   ctx.beginPath(); ctx.ellipse(0, -6, 5, 6, 0, 0, Math.PI * 2); ctx.fill();
   // 5 legs
   for (let i = 0; i < 5; i++) {
     const a = (i / 5) * Math.PI * 2 - Math.PI / 2;
     const lx = Math.cos(a) * 9;
     const ly = Math.sin(a) * 9 + 2;
-    const wobble = Math.sin(frame * 0.1 + i) * 2;
-    ctx.fillStyle = ready ? '#fa4' : '#a67040';
+    const wobble = infested ? Math.sin(frame * 0.3 + i) * 4 : Math.sin(frame * 0.1 + i) * 2;
+    ctx.fillStyle = bodyColor;
     ctx.beginPath();
     ctx.moveTo(lx * 0.5, ly * 0.5);
     ctx.lineTo(lx + wobble, ly + 4);
@@ -254,15 +287,40 @@ function drawRocky(x, y, ready) {
     ctx.fill();
   }
   // Top "hand" / appendage
-  ctx.fillStyle = ready ? '#fc6' : '#8a5a30';
+  ctx.fillStyle = innerColor;
   ctx.beginPath(); ctx.arc(0, -14, 4, 0, Math.PI * 2); ctx.fill();
+  // Taumoeba blobs if infested
+  if (infested) {
+    for (let i = 0; i < rocky.infestedTau; i++) {
+      const a = (i / rocky.infestedTau) * Math.PI * 2 + frame * 0.05;
+      const bx = Math.cos(a) * 7, by = Math.sin(a) * 7 - 4;
+      ctx.fillStyle = '#40c060';
+      ctx.beginPath(); ctx.arc(bx, by, 3 + Math.sin(frame * 0.1 + i) * 0.8, 0, Math.PI * 2); ctx.fill();
+    }
+    // SOS indicator
+    ctx.fillStyle = '#f44';
+    ctx.font = 'bold 8px monospace'; ctx.textAlign = 'center';
+    ctx.fillText('HELP!', 0, -22);
+  }
+  // Repair sparkle
+  if (repairing) {
+    ctx.globalAlpha = 0.5 + 0.3 * Math.sin(frame * 0.2);
+    ctx.fillStyle = '#ff0';
+    for (let i = 0; i < 3; i++) {
+      const a = frame * 0.15 + i * 2.1;
+      ctx.beginPath(); ctx.arc(Math.cos(a) * 12, Math.sin(a) * 12 - 4, 2, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    // Wrench icon
+    ctx.fillStyle = '#ccc'; ctx.font = '9px monospace'; ctx.textAlign = 'center';
+    ctx.fillText('\u{1F527}', 0, -22);
+  }
   // Glow if ready
-  if (ready) {
+  if (ready && !infested && !repairing) {
     ctx.globalAlpha = 0.3 + 0.2 * Math.sin(frame * 0.15);
     ctx.fillStyle = '#fa4';
     ctx.beginPath(); ctx.arc(0, -4, 16, 0, Math.PI * 2); ctx.fill();
     ctx.globalAlpha = 1;
-    // Astrophage icon above
     ctx.fillStyle = '#f80';
     ctx.beginPath(); ctx.arc(0, -24, 3, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = '#fc0';
@@ -381,6 +439,17 @@ function drawHUD() {
   ctx.fillStyle = '#88f';
   ctx.font = 'bold 10px monospace';
   ctx.fillText(`BEETLES: ${beetlesAvail}/${MAX_BEETLES}`, 8, H - 8);
+  // Rocky status
+  ctx.textAlign = 'right';
+  ctx.font = 'bold 9px monospace';
+  if (rocky.state === 'repairing') {
+    ctx.fillStyle = '#ff0';
+    const pct = Math.floor(rocky.repairProgress / 90 * 100);
+    ctx.fillText(`ROCKY: REPAIRING ${pct}%`, W - 8, H - 8);
+  } else if (rocky.state === 'infested') {
+    ctx.fillStyle = '#f44';
+    ctx.fillText('ROCKY: HELP!', W - 8, H - 8);
+  }
   // Controls hint
   if (frame < 300) {
     ctx.globalAlpha = Math.max(0, 1 - frame / 300);
@@ -438,8 +507,10 @@ function drawTitle() {
 
   ctx.fillStyle = '#666';
   ctx.font = '9px monospace';
-  ctx.fillText('Survive 82 waves to save Erid!', W / 2, 430);
-  ctx.fillText('Collect Astrophage from Rocky to launch Beetles', W / 2, 445);
+  ctx.fillText('Survive 82 waves to save Erid!', W / 2, 425);
+  ctx.fillText('Rocky repairs O2 tanks & gives Astrophage', W / 2, 440);
+  ctx.fillText('Rescue Rocky when Taumoeba attack him!', W / 2, 455);
+  ctx.fillText('Astrophage = Beetle fuel', W / 2, 470);
 }
 
 // Game over
@@ -518,17 +589,87 @@ function update() {
   if (player.cooldown > 0) player.cooldown--;
 
   // Rocky AI
-  rocky.readyTimer++;
-  if (rocky.readyTimer >= rocky.readyInterval && !rocky.ready) {
-    rocky.ready = true;
+  if (rocky.state === 'infested') {
+    // Infested: Rocky is stuck, shaking, waiting for Grace to rescue
+    rocky.infestedTimer--;
+    rocky.x += Math.sin(frame * 0.5) * 0.5;
+    // Grace rescues Rocky by getting close
+    if (Math.abs(player.x - rocky.x) < 25) {
+      rocky.state = 'idle';
+      rocky.infestedTau = 0;
+      rocky.infestedTimer = 0;
+      playSE('rescue');
+      spawnParticles(rocky.x, rocky.y, '#4f4', 12);
+    }
+    // If timer runs out, Rocky breaks free but is stunned
+    if (rocky.infestedTimer <= 0) {
+      rocky.state = 'idle';
+      rocky.infestedTau = 0;
+    }
+  } else if (rocky.state === 'repairing') {
+    // Move toward repair target
+    const tank = rocky.repairTarget;
+    if (!tank || tank.hp >= tank.maxHp) {
+      rocky.state = 'idle'; rocky.repairTarget = null; rocky.repairProgress = 0;
+    } else {
+      const dx = tank.x - rocky.x;
+      rocky.x += Math.sign(dx) * Math.min(Math.abs(dx), 1.5);
+      if (Math.abs(rocky.x - tank.x) < 15) {
+        rocky.repairProgress++;
+        if (rocky.repairProgress >= 90) {
+          tank.hp = Math.min(tank.maxHp, tank.hp + 1);
+          rocky.repairProgress = 0;
+          playSE('repair');
+          spawnParticles(tank.x, tank.y, '#ff0', 6);
+          if (tank.hp >= tank.maxHp) {
+            rocky.state = 'idle'; rocky.repairTarget = null;
+          }
+        }
+      }
+    }
+  } else {
+    // Idle: look for damaged tanks to repair
+    rocky.readyTimer++;
+    if (rocky.readyTimer >= rocky.readyInterval && !rocky.ready) {
+      rocky.ready = true;
+    }
+    // Find damaged O2 tank to repair (including destroyed ones)
+    const damaged = o2tanks.filter(t => t.hp < t.maxHp).sort((a, b) => a.hp - b.hp);
+    if (damaged.length > 0 && Math.random() < 0.005) {
+      rocky.state = 'repairing';
+      rocky.repairTarget = damaged[0];
+      rocky.repairProgress = 0;
+    } else {
+      // Wander near player
+      const targetX = player.x + 40 * Math.sin(frame * 0.01);
+      rocky.x += (targetX - rocky.x) * 0.02;
+    }
   }
-  // Rocky wanders near player
-  const targetX = player.x + 40 * Math.sin(frame * 0.01);
-  rocky.x += (targetX - rocky.x) * 0.02;
   rocky.x = Math.max(20, Math.min(W - 20, rocky.x));
 
-  // Collect Astrophage from Rocky
-  if (rocky.ready && Math.abs(player.x - rocky.x) < 25) {
+  // Taumoeba can infest Rocky (diving taumoeba that hit Rocky)
+  if (rocky.state !== 'infested') {
+    for (const t of taumoeba) {
+      if (!t.alive || !t.diving) continue;
+      if (Math.abs(t.x - rocky.x) < 16 && Math.abs(t.y - rocky.y) < 18) {
+        t.alive = false;
+        if (rocky.state !== 'infested') {
+          rocky.state = 'infested';
+          rocky.infestedTimer = 360;
+          rocky.infestedTau = 1;
+          rocky.ready = false;
+          rocky.repairTarget = null;
+          playSE('infested');
+        } else {
+          rocky.infestedTau = Math.min(5, rocky.infestedTau + 1);
+          rocky.infestedTimer = 360;
+        }
+      }
+    }
+  }
+
+  // Collect Astrophage from Rocky (only when idle and ready)
+  if (rocky.ready && rocky.state === 'idle' && Math.abs(player.x - rocky.x) < 25) {
     rocky.ready = false;
     rocky.readyTimer = 0;
     astrophage = Math.min(MAX_ASTROPHAGE, astrophage + 1);
